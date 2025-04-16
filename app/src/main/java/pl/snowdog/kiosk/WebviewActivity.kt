@@ -1,27 +1,29 @@
 package pl.snowdog.kiosk
 
+import android.Manifest
 import android.app.AlertDialog
 import android.app.admin.DevicePolicyManager
 import android.app.admin.SystemUpdatePolicy
 import android.content.*
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.net.http.SslError
-import android.os.BatteryManager
-import android.os.Build
-import android.os.Bundle
-import android.os.UserManager
+import android.os.*
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.util.Log
 import android.view.View
+import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.webkit.SslErrorHandler
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.webkit.*
 import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -40,8 +42,11 @@ class WebviewActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
         setContentView(R.layout.activity_webview)
         binding = ActivityMainBinding.inflate(layoutInflater)
+
+        supportActionBar?.hide()
 
         val defaultUrl = "https://on-system.net"
         sharedPref = getSharedPreferences(getString(R.string.storage_key), Context.MODE_PRIVATE)?: return
@@ -58,6 +63,12 @@ class WebviewActivity : AppCompatActivity() {
         fab.setOnClickListener {
             showDialog()
         }
+//        val result = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+//        if (result == PackageManager.PERMISSION_GRANTED) {
+//            Log.d("KioskApp", "Camera permission granted!")
+//        } else {
+//            Log.e("KioskApp", "Camera permission NOT granted!")
+//        }
     }
 
     private fun showDialog() {
@@ -68,7 +79,7 @@ class WebviewActivity : AppCompatActivity() {
         input.width = 0
         builder.setView(input)
 
-        builder.setPositiveButton(android.R.string.yes) { _, _ ->
+        builder.setPositiveButton(android.R.string.ok) { _, _ ->
             val inputPin = input.text.toString().toInt()
             if (inputPin == pin?.toInt()) {
                 goToHome()
@@ -140,6 +151,7 @@ class WebviewActivity : AppCompatActivity() {
         setUserRestriction(UserManager.DISALLOW_ADD_USER)
         setUserRestriction(UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA)
         setUserRestriction(UserManager.DISALLOW_ADJUST_VOLUME)
+        mDevicePolicyManager.setCameraDisabled(adminComponentName, false)
         mDevicePolicyManager.setStatusBarDisabled(adminComponentName, true)
     }
 
@@ -150,20 +162,30 @@ class WebviewActivity : AppCompatActivity() {
             setUpdatePolicy()
             setAsHomeApp()
             setKeyGuardEnabled()
+            setCameraPermission()
+            keepScreenBright()
         }
 
         setLockTask(isAdmin)
-        setImmersiveMode()
+        setImmersiveMode(window)
     }
 
-    private fun setImmersiveMode() {
-            val flags = (View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    private fun setImmersiveMode(window: android.view.Window) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let { controller ->
+                controller.hide(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE)
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars())
+            }
+        } else {
+            @Suppress("DEPRECATION") // handle the older API
+            window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
-            window.decorView.systemUiVisibility = flags
+        }
     }
 
     private fun setLockTask(isAdmin: Boolean) {
@@ -183,12 +205,14 @@ class WebviewActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (::webView.isInitialized && webView.canGoBack())
+        if (::webView.isInitialized && webView.canGoBack()){
             webView.goBack()
+        }
     }
 
     override fun onDestroy() {
         if (::reloadOnConnected.isInitialized)
+            webView.loadUrl("about:blank")
             reloadOnConnected.onActivityDestroy()
         super.onDestroy()
     }
@@ -223,9 +247,17 @@ class WebviewActivity : AppCompatActivity() {
         )
     }
 
+    private fun keepScreenBright() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
     private fun listenToConnectionChange() = reloadOnConnected.onActivityCreate(this)
 
     private fun setupWebView(url: String) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1);
+        }
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(
                 view: WebView?,
@@ -235,21 +267,31 @@ class WebviewActivity : AppCompatActivity() {
                 handler?.proceed() // Ignore SSL certificate errors
             }
         }
-
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                    request.grant(request.resources)
+            }
+        }
+        Log.i("ThreadCheck", "Is UI Thread: ${Looper.getMainLooper().isCurrentThread}")
+        val defaultUserAgent = WebSettings.getDefaultUserAgent(this)
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
-            useWideViewPort = true
-            userAgentString =  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/37.0.2049.0 Safari/537.36"
-            loadWithOverviewMode = true
-            setSupportZoom(true)
-            builtInZoomControls = true
+            //cacheMode = WebSettings.LOAD_NO_CACHE
+            userAgentString = defaultUserAgent
             displayZoomControls = false
             allowFileAccess = true
             allowContentAccess = true
+            mediaPlaybackRequiresUserGesture = false
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
         }
+        webView.setInitialScale(100)
         webView.scrollBarStyle = WebView.SCROLLBARS_OUTSIDE_OVERLAY
         webView.isScrollbarFadingEnabled = false
+        val isCameraDisabled = policyManager.getCameraDisabled(adminComponentName)
+        Log.i("KioskApp", "Camera disabled by DPM? $isCameraDisabled")
         webView.loadUrl(url)
     }
 
@@ -272,6 +314,40 @@ class WebviewActivity : AppCompatActivity() {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
     }
+
+    private fun setCameraPermission() {
+        if (policyManager.isDeviceOwnerApp(packageName)) {
+            policyManager.setPermissionGrantState(
+                adminComponentName,
+                packageName,
+                Manifest.permission.CAMERA,
+                DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+            )
+
+            policyManager.setPermissionGrantState(
+                adminComponentName,
+                packageName,
+                Manifest.permission.RECORD_AUDIO,
+                DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+            )
+
+            policyManager.setPermissionGrantState(
+                adminComponentName,
+                packageName,
+                Manifest.permission.CAPTURE_AUDIO_OUTPUT,
+                DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+            )
+
+            // Ensure the camera is enabled
+            policyManager.setCameraDisabled(adminComponentName, false)
+
+
+            Log.i("KioskApp", "Camera & Microphone permissions granted successfully!")
+        } else {
+            Log.e("KioskApp", "App is NOT a Device Owner. Cannot grant permissions.")
+        }
+    }
+
 
 
 }

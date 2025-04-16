@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import android.webkit.WebView
 
 class ReloadOnConnected(
@@ -24,6 +25,7 @@ class ReloadOnConnected(
     }
 
     fun onActivityDestroy() {
+        Log.i("Left Page", "page is left")
         connectivityManager.unregisterNetworkCallback(this)
     }
 
